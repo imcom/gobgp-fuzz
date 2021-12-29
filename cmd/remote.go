@@ -80,9 +80,9 @@ to quickly create a Cobra application.`,
 
 		dumperCh := make(chan struct{}, 1)
 		dumperCtx, dumperCancel := context.WithCancel(ctx)
-		dumper := NewDumper(dumperCtx, client, Workers, dumperCh, logger.Sugar())
+		var dumper Worker = NewDumper(dumperCtx, client, Workers, dumperCh, logger.Sugar(), "rib-dumper")
 		// start dumper
-		go dumper.Run()
+		go dumper.Loop(dumper.Once)
 
 		timer := time.NewTimer(time.Duration(duration) * time.Second)
 		<-timer.C

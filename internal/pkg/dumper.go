@@ -13,18 +13,12 @@ import (
 )
 
 type Dumper struct {
-	cli      api.GobgpApiClient
-	workers  int
-	ctx      context.Context
-	wg       sync.WaitGroup
-	quitCh   chan struct{}
-	interval time.Duration
-	log      *zap.SugaredLogger
+	worker
 }
 
 func NewDumper(ctx context.Context, client api.GobgpApiClient,
-	workers int, dumperCh chan struct{}, logger *zap.SugaredLogger) *Dumper {
-	return &Dumper{
+	workers int, dumperCh chan struct{}, logger *zap.SugaredLogger, name string) *Dumper {
+	return &Dumper{worker{
 		cli:      client,
 		workers:  workers,
 		ctx:      ctx,
@@ -32,10 +26,11 @@ func NewDumper(ctx context.Context, client api.GobgpApiClient,
 		quitCh:   dumperCh,
 		interval: 100 * time.Millisecond,
 		log:      logger,
-	}
+		Name:     name,
+	}}
 }
 
-func (d *Dumper) dump() {
+func (d *Dumper) Once() {
 	ctx, cancel := context.WithTimeout(d.ctx, 10*time.Second)
 	defer cancel()
 	stream, err := d.cli.ListPath(ctx, &api.ListPathRequest{
@@ -72,33 +67,4 @@ func (d *Dumper) dump() {
 			break
 		}
 	}
-}
-
-func (d *Dumper) loop() {
-	defer d.wg.Done()
-	dumpTicker := time.NewTicker(d.interval)
-	for {
-		select {
-		case <-dumpTicker.C:
-			d.dump()
-		case <-d.ctx.Done():
-			d.log.Info("context done")
-			return
-		}
-	}
-}
-
-func (d *Dumper) Run() {
-	for i := 0; i < d.workers; i++ {
-		d.wg.Add(1)
-		go d.loop()
-	}
-
-	d.log.Info("awaiting for dumper routines")
-	// wait for all dumper routines to quit
-	d.wg.Wait()
-
-	d.log.Info("all dumper routines finished")
-	// signal caller that dumper has quitted
-	d.quitCh <- struct{}{}
 }
