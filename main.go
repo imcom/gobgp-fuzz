@@ -15,8 +15,8 @@ limitations under the License.
 */
 package main
 
-import "github.com/imcom/gobgp-fuzz/cmd"
+import cmd "github.com/imcom/gobgp-fuzz/cmd/gobgp-fuzz"
 
 func main() {
-  cmd.Execute()
+	cmd.Execute()
 }

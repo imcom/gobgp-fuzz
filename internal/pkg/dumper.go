@@ -16,18 +16,21 @@ type Dumper struct {
 	worker
 }
 
+var _ Worker = (*Dumper)(nil)
+
 func NewDumper(ctx context.Context, client api.GobgpApiClient,
-	workers int, dumperCh chan struct{}, logger *zap.SugaredLogger, name string) *Dumper {
-	return &Dumper{worker{
-		cli:      client,
-		workers:  workers,
-		ctx:      ctx,
-		wg:       sync.WaitGroup{},
-		quitCh:   dumperCh,
-		interval: 100 * time.Millisecond,
-		log:      logger,
-		Name:     name,
-	}}
+	concurrent int, logger *zap.SugaredLogger, name string, wg *sync.WaitGroup) *Dumper {
+	return &Dumper{
+		worker{
+			cli:      client,
+			workers:  concurrent,
+			ctx:      ctx,
+			wg:       wg,
+			interval: 100 * time.Millisecond,
+			log:      logger,
+			Name:     name,
+		},
+	}
 }
 
 func (d *Dumper) Once() {
@@ -46,12 +49,12 @@ func (d *Dumper) Once() {
 	if err != nil {
 		st, ok := status.FromError(err)
 		if !ok {
-			d.log.Errorf("failed listing rib: %v\n", err)
+			d.log.Errorf("failed to list rib: %v\n", err)
 			return
 		}
 
 		if st.Code() == codes.Canceled {
-			d.log.Info("grpc stub canceled")
+			d.log.Debugf("grpc stub %s", st.Code())
 			return
 		}
 	}
@@ -62,9 +65,28 @@ func (d *Dumper) Once() {
 			break
 		} else if err != nil {
 			if st, ok := status.FromError(err); ok {
-				d.log.Infof("grpc error: %s", st.Code())
+				d.log.Debugf("expected grpc return: %s", st.Code())
 			}
 			break
 		}
+	}
+}
+
+func (d *Dumper) Loop() {
+	for i := 0; i < d.workers; i++ {
+		d.wg.Add(1)
+		go func(id int) {
+			defer d.wg.Done()
+			ticker := time.NewTicker(d.interval)
+			for {
+				select {
+				case <-ticker.C:
+					d.Once()
+				case <-d.ctx.Done():
+					d.log.Infof("context done returned from %s-%d", d.Name, id)
+					return
+				}
+			}
+		}(i)
 	}
 }
