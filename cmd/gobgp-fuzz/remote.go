@@ -19,9 +19,11 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/signal"
 	"runtime"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 
 	. "github.com/imcom/gobgp-fuzz/internal/pkg"
@@ -35,6 +37,7 @@ var (
 	Concurrent int
 	ctx        context.Context
 	cancel     context.CancelFunc
+	Cidrs      []string
 )
 
 // remoteCmd represents the remote command
@@ -49,7 +52,8 @@ This application is a tool to generate the needed files
 to quickly create a Cobra application.`,
 	Args: func(cmd *cobra.Command, args []string) error {
 		if len(args) < 1 {
-			return errors.New("requires a test duration argument")
+			// no duration means run forever
+			return nil
 		}
 
 		_, err := strconv.Atoi(args[0])
@@ -61,7 +65,10 @@ to quickly create a Cobra application.`,
 		return nil
 	},
 	Run: func(cmd *cobra.Command, args []string) {
-		duration, _ := strconv.Atoi(args[0])
+		var duration int
+		if len(args) >= 1 {
+			duration, _ = strconv.Atoi(args[0])
+		}
 
 		ctx, cancel = context.WithCancel(context.Background())
 		conn, err := grpc.DialContext(ctx, Addr, grpc.WithInsecure())
@@ -78,14 +85,41 @@ to quickly create a Cobra application.`,
 
 		wg := sync.WaitGroup{}
 
-		dumperCtx, dumperCancel := context.WithCancel(ctx)
-		var dumper Worker = NewDumper(dumperCtx, client, Concurrent, logger.Sugar(), "rib-dumper", &wg)
-		// start dumper
-		dumper.Loop()
+		// init workers
+		workers := []Worker{}
 
-		timer := time.NewTimer(time.Duration(duration) * time.Second)
-		<-timer.C
-		dumperCancel()
+		workerCtx, workerCancel := context.WithCancel(ctx)
+		dumper := NewDumper(workerCtx, client, Concurrent, logger.Sugar(), "rib-dumper", &wg)
+		workers = append(workers, dumper)
+
+		advertiser := NewAdvertiser(workerCtx, client, Concurrent, logger.Sugar(), "rib-modifier", Cidrs, &wg)
+		workers = append(workers, advertiser)
+
+		// start workers
+		for _, w := range workers {
+			w.Loop()
+		}
+
+		sigs := make(chan os.Signal, 1)
+		signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
+
+		go func() {
+			defer workerCancel()
+			if duration > 0 {
+				logger.Sugar().Infof("fuzz will run for %d seconds", duration)
+				timer := time.NewTimer(time.Duration(duration) * time.Second)
+				select {
+				case <-timer.C:
+					break
+				case <-sigs:
+					break
+				}
+			} else {
+				logger.Sugar().Infof("fuzz has begun, hit Ctrl-C to stop")
+				<-sigs
+			}
+		}()
+
 		// wait for workers
 		wg.Wait()
 	},
@@ -112,4 +146,5 @@ func init() {
 	// is called directly, e.g.:
 	remoteCmd.Flags().StringVarP(&Addr, "addr", "a", "127.0.0.1:50051", "gobgpd grpc addr")
 	remoteCmd.Flags().IntVarP(&Concurrent, "concurrent", "c", runtime.NumCPU(), "concurrent callers")
+	remoteCmd.Flags().StringSliceVarP(&Cidrs, "cidrs", "s", []string{"10.0.0.0/8"}, "CIDR pool to generate prefixes")
 }
